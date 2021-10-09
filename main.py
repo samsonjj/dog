@@ -162,8 +162,7 @@ def from_iso8601(s):
     return datetime.fromisoformat(s)
 
 def create_dog_table(dynamodb=None):
-    if not dynamodb:
-        dynamodb = boto3.resource('dynamodb', endpoint_url=os.getenv('DYNAMODB_URL'))
+    dynamodb = get_dynamodb(dynamodb)
 
     table = dynamodb.create_table(
         TableName='Dog',
@@ -202,32 +201,24 @@ def load_test_data():
 def get_dynamodb(dynamodb=None):
     if dynamodb:
         return dynamodb
-    return boto3.resource('dynamodb', endpoint_url=os.getenv('DYNAMODB_URL'))
+
+    endpoint_url = os.getenv('DYNAMODB_URL')
+    if endpoint_url:
+        return boto3.resource('dynamodb', endpoint_url=os.getenv('DYNAMODB_URL'))
+    return boto3.resource('dynamodb', region_name='us-east-1')
 
 def get_table(table_name, dynamodb=None):
     dynamodb = get_dynamodb(dynamodb)
     return dynamodb.Table(table_name)
-
-def get_dog_tweet(tweet_id, created_at, dynamodb=None):
-    dynamodb = get_dynamodb(dynamodb)
-    table = dynamodb.Table('Dog')
-    
-    return table.get_item(Key={'tweet_id': tweet_id, 'created_at': created_at})
-
-def clean_db(tweets, dynamodb=None):
-    table = get_table('Dog')
-
-    for tweet in tweets:
-        table.delete_item(Key={'tweet_id'})
         
 def good_tweet(tweet):
     return tweet.date > datetime.now() - timedelta(days = 7) and not tweet.text.startswith("RT")
 
-if __name__ == '__main__':
+def main(event=None, context=None):
     dog_resource = DogResource()
 
     # fetch tweets and add to database
-    tweets = load_test_data()
+    tweets = get_dog_tweets()
     for tweet in tweets:
         if good_tweet(tweet) and dog_resource.get(tweet) is None:
             dog_resource.put(tweet)
@@ -237,6 +228,10 @@ if __name__ == '__main__':
     for tweet in dog_resource.get_since(datetime.now() - timedelta(7)):
         if not tweet.sent:
             print(f'sending text for tweet {tweet.date}')
+            send_text(os.getenv('TO_PHONE'), f'{tweet.text}\n\n- Dog')
             tweet.sent = True
             dog_resource.update(tweet)
 
+
+if __name__ == '__main__':
+    main()
