@@ -22,7 +22,7 @@ class Tweet:
         self.text: str = data['text']
         self.date: datetime = from_iso8601(data['created_at'])
         self.sent = data.get('text_sent', False)
-    
+
     def __str__(self):
         return f'created at {self.date}'
 
@@ -74,7 +74,7 @@ class DogResource():
             'text': tweet.text,
             'text_sent': tweet.sent
         })
-    
+
     def update(self, tweet: Tweet):
         return self._table.update_item(
             Key={
@@ -107,7 +107,7 @@ class DogResource():
         } for item in response['Items']]
 
         return [Tweet(item) for item in data]
-        
+
 
 def get_dog_tweets() -> List[Tweet]:
     api_key = os.getenv('TWITTER_API_KEY')
@@ -116,7 +116,8 @@ def get_dog_tweets() -> List[Tweet]:
     user_id = '846137120209190912'
     url = f'https://api.twitter.com/2/users/{user_id}/tweets'
     params = {
-        'tweet.fields': 'created_at'
+        'tweet.fields': 'created_at',
+        'max_results': 20,
     }
     headers = {
         'Authorization': f'Bearer {bearer_token}',
@@ -132,7 +133,7 @@ def get_dog_tweets() -> List[Tweet]:
     print(f'got response {r}')
 
     return [Tweet(item) for item in r.json()['data']]
-        
+
 
 def send_text(phone_number: str, message: str):
     auth_token = os.getenv('TWILIO_AUTH_TOKEN')
@@ -210,9 +211,16 @@ def get_dynamodb(dynamodb=None):
 def get_table(table_name, dynamodb=None):
     dynamodb = get_dynamodb(dynamodb)
     return dynamodb.Table(table_name)
-        
+
 def good_tweet(tweet):
-    return tweet.date > datetime.now() - timedelta(days = 7) and not tweet.text.startswith("RT")
+    # currently removing the expired requiement
+    # expired = tweet.date > datetime.now() - timedelta(days = 7)
+    expired = tweet.date < datetime.strptime('2021/11/01', '%Y/%m/%d')
+    retweet = tweet.text.startswith("RT")
+    contains_link = ".com" in tweet.text or ".org" in tweet.text or "http" in tweet.text
+    contains_at = "@" in tweet.text
+    print(f'expired={expired}, retweet={retweet}, contains_link={contains_link}, contians_at={contains_at}')
+    return not expired and not retweet and not contains_link and not contains_at
 
 def main(event=None, context=None):
     dog_resource = DogResource()
@@ -220,7 +228,15 @@ def main(event=None, context=None):
     # fetch tweets and add to database
     tweets = get_dog_tweets()
     for tweet in tweets:
-        if good_tweet(tweet) and dog_resource.get(tweet) is None:
+        print(f'tweet text: {tweet.text}')
+        good = good_tweet(tweet)
+        present = (not dog_resource.get(tweet) is None)
+        print(f'good={good}')
+        print(f'present={present}')
+        if good and not present:
+            if os.getenv('TEST'):
+                print('skipping database put due to TEST environment variable')
+                continue
             dog_resource.put(tweet)
 
     # send texts for tweets which have not been sent
@@ -228,9 +244,15 @@ def main(event=None, context=None):
     for tweet in dog_resource.get_since(datetime.now() - timedelta(7)):
         if not tweet.sent:
             print(f'sending text for tweet {tweet.date}')
+            if os.getenv('TEST') == "TRUE":
+                print('skipping sms and database update, due to TEST environment variable')
+                continue
             send_text(os.getenv('TO_PHONE'), f'{tweet.text}\n\n- Dog')
             tweet.sent = True
             dog_resource.update(tweet)
+
+            # we only want to send one tweet per run
+            break
 
 
 if __name__ == '__main__':
